@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Hoodly Remote Browser</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+<style>
+:root{
+  --bg:#06111f;
+  --top:#081a31;
+  --top2:#0d274b;
+  --blue:#1769ff;
+  --blue2:#4da3ff;
+  --text:#ffffff;
+  --muted:#9db8dd;
+  --line:rgba(255,255,255,.12);
+  --tab:rgba(255,255,255,.09);
+  --active:#ffffff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;font-family:Inter,system-ui,sans-serif;background:#020812;color:var(--text)}
+.hidden{display:none!important}
+
+/* LOCK */
+.lock{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top left,rgba(77,163,255,.25),transparent 36%),radial-gradient(circle at bottom right,rgba(23,105,255,.18),transparent 34%),#020812}
+.lock-card{width:min(470px,100%);background:linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.06));border:1px solid rgba(255,255,255,.14);border-radius:34px;padding:32px;box-shadow:0 30px 100px rgba(0,0,0,.45);backdrop-filter:blur(22px)}
+.lock-badge{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:rgba(77,163,255,.16);border:1px solid rgba(77,163,255,.28);color:#dcecff;font-size:12px;font-weight:900}
+.lock-title{font-size:52px;line-height:.88;letter-spacing:-.075em;margin:18px 0 14px;font-weight:900}
+.lock-text{color:var(--muted);line-height:1.5;font-weight:650;margin:0 0 18px}
+.lock-input{width:100%;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.1);color:white;outline:none;border-radius:18px;padding:15px 16px;font:inherit;font-weight:750}
+.lock-input::placeholder{color:#8faad0}
+.lock-btn{width:100%;margin-top:12px;border:0;border-radius:18px;padding:15px 16px;background:linear-gradient(135deg,var(--blue),var(--blue2));color:white;font:inherit;font-weight:950;cursor:pointer}
+.lock-btn:hover{filter:brightness(1.08)}
+.lock-error{margin-top:12px;color:#ff8585;font-size:14px;font-weight:850}
+
+/* BROWSER */
+.browser{width:100vw;height:100vh;display:grid;grid-template-rows:88px minmax(0,1fr);background:#020812}
+.topbar{height:88px;background:radial-gradient(circle at top left,rgba(77,163,255,.24),transparent 34%),linear-gradient(180deg,var(--top2),var(--top));border-bottom:1px solid var(--line);display:grid;grid-template-rows:40px 48px;overflow:hidden}
+.tabs-row{display:flex;align-items:end;gap:6px;padding:7px 10px 0;min-width:0}
+.brand{height:32px;display:flex;align-items:center;gap:8px;color:white;font-weight:900;letter-spacing:-.04em;padding:0 10px 6px 2px;flex-shrink:0}
+.brand-dot{width:11px;height:11px;border-radius:50%;background:var(--blue2);box-shadow:0 0 20px var(--blue2)}
+.tabs{display:flex;align-items:end;gap:5px;flex:1;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{height:33px;min-width:132px;max-width:230px;padding:0 8px 0 12px;border-radius:15px 15px 0 0;background:var(--tab);color:#dcecff;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:800;cursor:pointer;border:1px solid rgba(255,255,255,.09);border-bottom:0;overflow:hidden;flex-shrink:0}
+.tab.active{background:var(--active);color:#071a33}
+.tab.pinned{min-width:104px;max-width:125px;background:rgba(77,163,255,.18);border-color:rgba(77,163,255,.32)}
+.tab.pinned.active{background:white}
+.tab-title{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;flex:1}
+.close-tab{width:19px;height:19px;border-radius:50%;border:0;background:transparent;color:inherit;display:grid;place-items:center;cursor:pointer;font-weight:900;opacity:.72;flex-shrink:0}
+.close-tab:hover{background:rgba(0,0,0,.15);opacity:1}
+.new-tab{width:32px;height:32px;border-radius:13px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.09);color:white;cursor:pointer;font-size:20px;font-weight:800;flex-shrink:0;margin-bottom:1px}
+.nav-row{display:grid;grid-template-columns:auto auto auto minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:7px 10px 10px}
+.nav-btn{width:35px;height:35px;border-radius:13px;border:1px solid rgba(255,255,255,.11);background:rgba(255,255,255,.08);color:white;cursor:pointer;font-size:16px;font-weight:900}
+.nav-btn:hover,.new-tab:hover{background:rgba(255,255,255,.15)}
+.address{height:35px;border-radius:999px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;gap:9px;padding:0 14px;min-width:0}
+.search-icon{color:var(--blue2);font-weight:900}
+#addressInput{width:100%;height:100%;border:0;outline:0;background:transparent;color:white;font:inherit;font-size:13px;font-weight:700}
+#addressInput::placeholder{color:#89a8d0}
+.google-chip,.logout-chip{color:#dcecff;background:rgba(77,163,255,.16);border:1px solid rgba(77,163,255,.26);border-radius:999px;padding:7px 11px;font-size:11px;font-weight:900;white-space:nowrap}
+.logout-chip{cursor:pointer;background:rgba(255,255,255,.08)}
+.screen-wrap{width:100%;height:100%;min-height:0;background:#000;position:relative;overflow:hidden}
+#screen{width:100%;height:100%;display:block;object-fit:contain;background:#000;user-select:none;-webkit-user-drag:none}
+.status{position:absolute;right:14px;bottom:14px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);color:white;padding:8px 11px;border-radius:999px;font-size:11px;font-weight:900;backdrop-filter:blur(10px);pointer-events:none}
+.fps{position:absolute;left:14px;bottom:14px;background:rgba(0,0,0,.48);border:1px solid rgba(255,255,255,.12);color:#dcecff;padding:8px 11px;border-radius:999px;font-size:11px;font-weight:900;backdrop-filter:blur(10px);pointer-events:none}
+
+@media(max-width:760px){
+  .brand{display:none}
+  .browser{grid-template-rows:96px minmax(0,1fr)}
+  .topbar{height:96px}
+  .tabs-row{padding-left:7px}
+  .tab{min-width:105px}
+  .google-chip,.logout-chip{display:none}
+}
+</style>
+</head>
+<body>
+
+<section id="lock" class="lock">
+  <div class="lock-card">
+    <div class="lock-badge">🔐 Acceso privado</div>
+    <div class="lock-title">Hoodly<br>Browser</div>
+    <p class="lock-text">Introduce la contraseña para abrir el navegador remoto.</p>
+    <input id="passwordInput" class="lock-input" type="password" placeholder="Contraseña">
+    <button id="enterBtn" class="lock-btn">Entrar</button>
+    <div id="lockError" class="lock-error"></div>
+  </div>
+</section>
+
+<main id="browser" class="browser hidden">
+  <header class="topbar">
+    <div class="tabs-row">
+      <div class="brand"><div class="brand-dot"></div>Hoodly</div>
+      <div id="tabs" class="tabs"></div>
+      <button id="newTabBtn" class="new-tab">+</button>
+    </div>
+    <div class="nav-row">
+      <button id="backBtn" class="nav-btn">‹</button>
+      <button id="forwardBtn" class="nav-btn">›</button>
+      <button id="reloadBtn" class="nav-btn">↻</button>
+      <div class="address">
+        <span class="search-icon">⌕</span>
+        <input id="addressInput" placeholder="Buscar en Google o escribir una URL">
+      </div>
+      <div class="google-chip">Google Search</div>
+      <button id="logoutBtn" class="logout-chip">Salir</button>
+    </div>
+  </header>
+  <section class="screen-wrap">
+    <img id="screen" alt="Pantalla remota">
+    <div id="fps" class="fps">Remote Chromium</div>
+    <div id="status" class="status">Conectando...</div>
+  </section>
+</main>
+
+<script type="module">
+import { initializeApp }             from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey:            "AIzaSyCdcQr8dLemM6ZbwwUSgEYMFFswJWUk0m4",
+  authDomain:        "badminton-98ddd.firebaseapp.com",
+  projectId:         "badminton-98ddd",
+  storageBucket:     "badminton-98ddd.firebasestorage.app",
+  messagingSenderId: "118680568883",
+  appId:             "1:118680568883:web:1e381457e460115c1c4f46",
+  measurementId:     "G-1FCL9D6W1G",
+};
+const fbApp = initializeApp(firebaseConfig);
+const db    = getFirestore(fbApp);
+
+// ── Constantes ────────────────────────────────────────────────────────────────
+const API             = window.location.origin;
+const VIEWPORT_WIDTH  = 1280;
+const VIEWPORT_HEIGHT = 720;
+
+// El worker del servidor genera hasta 15 fps.
+// El cliente hace polling a 10 fps en idle y a 20 fps tras una acción.
+// A 20 fps el cliente "ve" el frame nuevo prácticamente en cuanto está listo.
+const POLL_IDLE_MS    = 100;   // ~10 fps en reposo
+const POLL_ACTIVE_MS  = 50;    // ~20 fps tras acción (≤ 2 s)
+const ACTIVE_WINDOW   = 2000;  // ms que dura el modo activo
+const SCROLL_DEBOUNCE = 50;    // ms para agrupar eventos wheel
+const TYPE_DELAY      = 50;    // ms de inactividad para enviar buffer de texto
+
+// ── DOM ───────────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const lock         = $("lock");
+const browserApp   = $("browser");
+const screen       = $("screen");
+const tabsEl       = $("tabs");
+const addressInput = $("addressInput");
+const statusEl     = $("status");
+const fpsEl        = $("fps");
+const lockError    = $("lockError");
+
+// ── Estado ────────────────────────────────────────────────────────────────────
+let live           = false;
+let polling        = false;
+let currentTabs    = [];
+let lastFrameTime  = performance.now();
+let frameCount     = 0;
+let lastActiveTime = 0;
+let pollTimer      = null;
+let scrollAccum    = 0;
+let scrollTimer    = null;
+let typeBuffer     = "";
+let typeTimer      = null;
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+async function sha256(text){
+  const buf  = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+async function checkPassword(pw){
+  const snap = await getDoc(doc(db, "config", "private"));
+  if(!snap.exists()){ lockError.textContent = "No existe config/private en Firebase."; return false; }
+  return (await sha256(pw.trim())) === snap.data().passHash;
+}
+
+function unlock(){
+  localStorage.setItem("hoodly_browser_access","1");
+  lock.classList.add("hidden");
+  browserApp.classList.remove("hidden");
+  live = true;
+  startBrowserUI();
+}
+
+$("enterBtn").addEventListener("click", async () => {
+  const pw = $("passwordInput").value.trim();
+  lockError.textContent = "";
+  if(!pw){ lockError.textContent = "Escribe la contraseña."; return; }
+  try {
+    if(await checkPassword(pw)) unlock();
+    else lockError.textContent = "Contraseña incorrecta.";
+  } catch(err){
+    console.error(err);
+    lockError.textContent = "No se pudo conectar con Firebase.";
+  }
+});
+$("passwordInput").addEventListener("keydown", e => { if(e.key==="Enter") $("enterBtn").click(); });
+$("logoutBtn").addEventListener("click", () => { localStorage.removeItem("hoodly_browser_access"); location.reload(); });
+
+// ── HTTP ──────────────────────────────────────────────────────────────────────
+function setStatus(t){ statusEl.textContent = t; }
+
+async function api(path, opts={}){
+  const res = await fetch(API + path, { cache:"no-store", ...opts });
+  if(!res.ok) throw new Error("HTTP "+res.status);
+  return res.json();
+}
+function post(path, body){
+  return api(path, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function renderTabs(tabs){
+  currentTabs = Array.isArray(tabs) ? tabs : [];
+
+  const active = currentTabs.find(t => t.active);
+  if(active && document.activeElement !== addressInput)
+    addressInput.value = active.url || "";
+
+  // Solo reconstruye el DOM si algo cambió
+  const key = currentTabs.map(t => `${t.id}|${t.active}|${t.title}`).join(",");
+  if(tabsEl._key === key) return;
+  tabsEl._key = key;
+  tabsEl.innerHTML = "";
+
+  currentTabs.forEach(tab => {
+    const el = document.createElement("div");
+    el.className = "tab"+(tab.active?" active":"")+(tab.pinned?" pinned":"");
+    el.title = tab.url||"";
+
+    const icon = document.createElement("span");
+    icon.textContent = tab.pinned ? "📌" : "🌐";
+
+    const title = document.createElement("span");
+    title.className = "tab-title";
+    title.textContent = tab.title||"Nueva pestaña";
+
+    el.append(icon, title);
+
+    el.addEventListener("click", async () => {
+      await post("/tab/switch", {id:tab.id});
+      markActive();
+      triggerPoll();
+    });
+
+    if(!tab.pinned){
+      const close = document.createElement("button");
+      close.className = "close-tab";
+      close.textContent = "×";
+      close.addEventListener("click", async e => {
+        e.stopPropagation();
+        await post("/tab/close", {id:tab.id});
+        markActive();
+        triggerPoll();
+      });
+      el.appendChild(close);
+    }
+    tabsEl.appendChild(el);
+  });
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+function markActive(){
+  lastActiveTime = performance.now();
+}
+
+function pollInterval(){
+  return (performance.now() - lastActiveTime) < ACTIVE_WINDOW ? POLL_ACTIVE_MS : POLL_IDLE_MS;
+}
+
+/** Cancela el timer actual y dispara un poll ahora mismo */
+function triggerPoll(){
+  if(pollTimer){ clearTimeout(pollTimer); pollTimer = null; }
+  schedulePoll(0);
+}
+
+function schedulePoll(delayMs){
+  if(pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(pollLoop, delayMs ?? pollInterval());
+}
+
+async function pollLoop(){
+  if(!live) return;
+  if(!polling) await doRefresh();
+  schedulePoll();
+}
+
+// ── Refresco de pantalla ──────────────────────────────────────────────────────
+async function doRefresh(){
+  if(polling) return;
+  polling = true;
+  try {
+    const data = await api("/screenshot");
+    if(data.image){
+      // Asignación directa — sin precargar en Image() temporal
+      // El navegador hace el swap de forma atómica al decodificar
+      screen.src = data.image;
+      renderTabs(data.tabs);
+      setStatus("Tab: "+(data.active||"—"));
+
+      frameCount++;
+      const now = performance.now();
+      if(now - lastFrameTime >= 1000){
+        fpsEl.textContent = frameCount+" fps";
+        frameCount    = 0;
+        lastFrameTime = now;
+      }
+    }
+  } catch(e){
+    setStatus("Sin conexión con server.py");
+  } finally {
+    polling = false;
+  }
+}
+
+// ── Controles ─────────────────────────────────────────────────────────────────
+$("newTabBtn").addEventListener("click", async () => {
+  await post("/tab/new", {});
+  markActive(); triggerPoll();
+});
+$("backBtn").addEventListener("click", async () => {
+  await post("/nav/back", {}); markActive(); triggerPoll();
+});
+$("forwardBtn").addEventListener("click", async () => {
+  await post("/nav/forward", {}); markActive(); triggerPoll();
+});
+$("reloadBtn").addEventListener("click", async () => {
+  await post("/nav/reload", {}); markActive(); triggerPoll();
+});
+
+addressInput.addEventListener("focus", () => addressInput.select());
+addressInput.addEventListener("keydown", async e => {
+  if(e.key !== "Enter") return;
+  const text = addressInput.value.trim();
+  if(!text) return;
+  setStatus("Cargando…");
+  await post("/navigate", {text});
+  addressInput.blur();
+  markActive(); triggerPoll();
+});
+
+// ── Coordenadas de pantalla ───────────────────────────────────────────────────
+function screenPoint(e){
+  const rect     = screen.getBoundingClientRect();
+  const imgRatio = VIEWPORT_WIDTH / VIEWPORT_HEIGHT;
+  const boxRatio = rect.width / rect.height;
+  let displayWidth, displayHeight, offsetX = 0, offsetY = 0;
+  if(boxRatio > imgRatio){
+    displayHeight = rect.height;
+    displayWidth  = rect.height * imgRatio;
+    offsetX = (rect.width - displayWidth) / 2;
+  } else {
+    displayWidth  = rect.width;
+    displayHeight = rect.width / imgRatio;
+    offsetY = (rect.height - displayHeight) / 2;
+  }
+  const lx = e.clientX - rect.left - offsetX;
+  const ly = e.clientY - rect.top  - offsetY;
+  return {
+    x: Math.max(0, Math.min(VIEWPORT_WIDTH-1,  Math.round(lx * (VIEWPORT_WIDTH  / displayWidth)))),
+    y: Math.max(0, Math.min(VIEWPORT_HEIGHT-1, Math.round(ly * (VIEWPORT_HEIGHT / displayHeight)))),
+  };
+}
+
+// ── Eventos de pantalla ───────────────────────────────────────────────────────
+
+// act_shot: acción + frame actual en un solo round-trip.
+// El servidor devuelve el frame más reciente inmediatamente y
+// el worker genera el nuevo frame en background.
+async function actShot(body){
+  markActive();
+  try {
+    const data = await post("/act_shot", body);
+    if(data.image){ screen.src = data.image; renderTabs(data.tabs); }
+  } catch(_){ /* el poll siguiente lo compensará */ }
+  triggerPoll();   // solicita el frame nuevo tan pronto como esté listo
+}
+
+screen.addEventListener("click", e => {
+  const {x,y} = screenPoint(e);
+  actShot({action:"click", x, y});
+});
+
+screen.addEventListener("dblclick", e => {
+  const {x,y} = screenPoint(e);
+  actShot({action:"dblclick", x, y});
+});
+
+// Scroll: agrupa eventos wheel en un solo envío
+screen.addEventListener("wheel", e => {
+  e.preventDefault();
+  scrollAccum += (e.deltaY > 0 ? 180 : -180);
+  if(scrollTimer) return;
+  scrollTimer = setTimeout(() => {
+    const amount = scrollAccum;
+    scrollAccum  = 0;
+    scrollTimer  = null;
+    actShot({action:"scroll", amount});
+  }, SCROLL_DEBOUNCE);
+}, {passive:false});
+
+// Teclado: buffer de texto para reducir peticiones al escribir rápido
+document.addEventListener("keydown", async e => {
+  if(document.activeElement === addressInput) return;
+  if(!lock.classList.contains("hidden"))      return;
+  if(e.ctrlKey || e.metaKey) return;
+
+  const special = ["Enter","Backspace","Tab","Escape",
+    "ArrowUp","ArrowDown","ArrowLeft","ArrowRight",
+    "Delete","Home","End","PageUp","PageDown"];
+
+  if(special.includes(e.key)){
+    e.preventDefault();
+    // Vacía el buffer antes de enviar tecla especial
+    if(typeBuffer){
+      clearTimeout(typeTimer);
+      const t = typeBuffer; typeBuffer = "";
+      await post("/act_shot", {action:"type", text:t});
+    }
+    actShot({action:"key", key:e.key});
+    return;
+  }
+
+  if(e.key.length === 1){
+    e.preventDefault();
+    typeBuffer += e.key;
+    clearTimeout(typeTimer);
+    typeTimer = setTimeout(() => {
+      const t = typeBuffer; typeBuffer = "";
+      actShot({action:"type", text:t});
+    }, TYPE_DELAY);
+  }
+});
+
+// ── Arranque ──────────────────────────────────────────────────────────────────
+async function startBrowserUI(){
+  try { const d = await api("/tabs"); renderTabs(d.tabs); } catch(_){}
+  await doRefresh();
+  schedulePoll();
+}
+
+window.addEventListener("load", () => {
+  if(localStorage.getItem("hoodly_browser_access") === "1") unlock();
+});
+</script>
+
+</body>
+</html>
