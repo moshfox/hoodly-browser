@@ -48,6 +48,7 @@ def get_frame():
     with _frame_lock:
         return _frame_b64
 
+
 def capture_now():
     global _frame_b64, _frame_ts
 
@@ -74,6 +75,8 @@ def capture_now():
     except Exception as e:
         print("CAPTURE_NOW ERROR:", repr(e), flush=True)
         return ""
+
+
 def normalize_url_or_search(text):
     value = (text or "").strip()
 
@@ -123,11 +126,11 @@ def start_browser():
                 "--disable-backgrounding-occluded-windows",
                 "--disable-renderer-backgrounding",
                 "--disable-software-rasterizer",
-"--disable-extensions",
-"--disable-background-networking",
-"--single-process",
-"--no-zygote",
-"--window-size=1280,720",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--single-process",
+                "--no-zygote",
+                "--window-size=1280,720",
             ],
         )
 
@@ -243,13 +246,7 @@ def capture_worker():
                     type="jpeg",
                     quality=JPEG_QUALITY,
                     full_page=False,
-                    timeout=5000,
-                    clip={
-                        "x": 0,
-                        "y": 0,
-                        "width": VIEWPORT_WIDTH,
-                        "height": VIEWPORT_HEIGHT,
-                    },
+                    timeout=10000,
                 )
 
             encoded = "data:image/jpeg;base64," + base64.b64encode(shot).decode()
@@ -261,7 +258,8 @@ def capture_worker():
             with _dirty_lock:
                 _dirty = False
 
-        except Exception:
+        except Exception as e:
+            print("CAPTURE_WORKER ERROR:", repr(e), flush=True)
             time.sleep(0.05)
 
         time.sleep(1.0 / TARGET_FPS)
@@ -321,8 +319,8 @@ def screenshot():
 
         image = get_frame()
 
-if not image:
-    image = capture_now()
+        if not image:
+            image = capture_now()
 
         return jsonify({
             "ok": True,
@@ -332,9 +330,10 @@ if not image:
         })
 
     except Exception as e:
+        print("SCREENSHOT ERROR:", repr(e), flush=True)
         return jsonify({
             "ok": False,
-            "image": None,
+            "image": "",
             "active": None,
             "tabs": [],
             "error": str(e),
@@ -601,8 +600,8 @@ def act_shot():
 
 
 if __name__ == "__main__":
-    print("Hoodly Remote Browser iniciado")
-    print("Abre: http://127.0.0.1:5050")
+    print("Hoodly Remote Browser iniciado", flush=True)
+    print("Abre: http://127.0.0.1:5050", flush=True)
 
     ensure_runtime_started()
 
