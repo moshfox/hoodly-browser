@@ -225,14 +225,22 @@ def get_tabs():
 @app.route("/screenshot")
 def screenshot():
     try:
-        def fn(tabs, active_tab, _tc, frame_b64, dirty,
-               create_tab, ensure_active, capture, tabs_payload, sync_meta):
-            ensure_active()
-            if dirty[0] or frame_b64[0] is None:
-                capture()
-            return {"ok": True, "image": frame_b64[0] or "",
-                    "active": active_tab[0], "tabs": tabs_payload()}
-        return jsonify(_call(fn))
+        # First call: wait up to 8 s for the Playwright worker to produce a frame
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            def fn(tabs, active_tab, _tc, frame_b64, dirty,
+                   create_tab, ensure_active, capture, tabs_payload, sync_meta):
+                ensure_active()
+                if dirty[0] or frame_b64[0] is None:
+                    capture()
+                return {"ok": True, "image": frame_b64[0],
+                        "active": active_tab[0], "tabs": tabs_payload()}
+            result = _call(fn)
+            if result.get("image"):
+                return jsonify(result)
+            time.sleep(0.25)   # worker still starting up — retry
+        # Give up and return whatever we have (may be None → client shows black)
+        return jsonify({"ok": True, "image": "", "active": None, "tabs": []})
     except Exception as e:
         return jsonify({"ok": False, "image": None, "tabs": [],
                         "error": str(e)}), 500
@@ -319,15 +327,14 @@ def navigate():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-def _nav_action(page_method, **kwargs):
+def _nav_action(page_method):
     try:
         def fn(tabs, active_tab, _tc, frame_b64, dirty,
                create_tab, ensure_active, capture, tabs_payload, sync_meta):
             ensure_active()
             page = tabs[active_tab[0]]["page"]
             try:
-                getattr(page, page_method)(
-                    wait_until="domcontentloaded", timeout=20_000, **kwargs)
+                getattr(page, page_method)(timeout=20_000)
                 sync_meta(tabs[active_tab[0]])
             except Exception:
                 pass
