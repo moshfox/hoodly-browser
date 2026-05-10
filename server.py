@@ -24,7 +24,6 @@ runtime_lock = RLock()
 VIEWPORT_WIDTH = 1280
 VIEWPORT_HEIGHT = 720
 
-HOODLY_URL = "https://hodely.net/Hoodly/"
 HOME_URL = "https://www.google.com"
 
 _frame_b64 = None
@@ -34,8 +33,8 @@ _frame_lock = RLock()
 _dirty = True
 _dirty_lock = RLock()
 
-TARGET_FPS = 15
-JPEG_QUALITY = 42
+TARGET_FPS = 5
+JPEG_QUALITY = 28
 
 
 def mark_dirty():
@@ -55,11 +54,11 @@ def capture_now():
     try:
         with browser_lock:
             page = get_active_page()
-            page.wait_for_timeout(700)
+            page.wait_for_timeout(180)
 
             shot = page.screenshot(
                 type="jpeg",
-                quality=70,
+                quality=JPEG_QUALITY,
                 full_page=False,
                 timeout=10000,
             )
@@ -97,7 +96,8 @@ def safe_goto(page, url):
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
     except PlaywrightTimeoutError:
         pass
-    except Exception:
+    except Exception as e:
+        print("GOTO ERROR:", repr(e), flush=True)
         try:
             page.goto("about:blank", timeout=10000)
         except Exception:
@@ -116,22 +116,21 @@ def start_browser():
         browser = pw.chromium.launch(
             headless=True,
             args=[
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--disable-web-security",
-    "--disable-features=IsolateOrigins,site-per-process",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "--disable-extensions",
-    "--disable-background-networking",
-    "--window-size=1280,720",
-],
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--window-size=1280,720",
+            ],
         )
 
-        create_tab(HOODLY_URL, pinned=True, title="Hoodly")
         create_tab(HOME_URL, pinned=False, title="Google")
 
 
@@ -162,8 +161,8 @@ def create_tab(url=None, pinned=False, title="Nueva pestaña"):
         "created": time.time(),
     }
 
-    safe_goto(page, final_url)
     active_tab = tab_id
+    safe_goto(page, final_url)
     sync_tab_meta(tab_id)
     mark_dirty()
 
@@ -196,12 +195,8 @@ def sync_tab_meta(tab_id):
 
     try:
         tabs[tab_id]["url"] = page.url or tabs[tab_id]["url"]
-
-        if tabs[tab_id]["pinned"]:
-            tabs[tab_id]["title"] = "Hoodly"
-        else:
-            title = page.title()
-            tabs[tab_id]["title"] = title[:60] if title else "Nueva pestaña"
+        title = page.title()
+        tabs[tab_id]["title"] = title[:60] if title else "Nueva pestaña"
 
     except Exception:
         pass
@@ -230,7 +225,7 @@ def capture_worker():
             need = _dirty
 
         if not need:
-            time.sleep(0.012)
+            time.sleep(0.04)
             continue
 
         try:
@@ -257,7 +252,7 @@ def capture_worker():
 
         except Exception as e:
             print("CAPTURE_WORKER ERROR:", repr(e), flush=True)
-            time.sleep(0.05)
+            time.sleep(0.1)
 
         time.sleep(1.0 / TARGET_FPS)
 
@@ -351,10 +346,11 @@ def new_tab():
             tab_id = create_tab(url, pinned=False, title="Nueva pestaña")
             active_tab = tab_id
 
-        mark_dirty()
+        image = capture_now()
 
         return jsonify({
             "ok": True,
+            "image": image,
             "active": active_tab,
             "tabs": tabs_payload(),
         })
@@ -384,10 +380,11 @@ def switch_tab():
         }), 404
 
     active_tab = tab_id
-    mark_dirty()
+    image = capture_now()
 
     return jsonify({
         "ok": True,
+        "image": image,
         "active": active_tab,
         "tabs": tabs_payload(),
     })
@@ -429,10 +426,11 @@ def close_tab():
 
         ensure_active_tab()
 
-    mark_dirty()
+    image = capture_now()
 
     return jsonify({
         "ok": True,
+        "image": image,
         "active": active_tab,
         "tabs": tabs_payload(),
     })
@@ -451,10 +449,11 @@ def navigate():
             safe_goto(page, url)
             sync_tab_meta(active_tab)
 
-        mark_dirty()
+        image = capture_now()
 
         return jsonify({
             "ok": True,
+            "image": image,
             "url": url,
             "active": active_tab,
             "tabs": tabs_payload(),
@@ -482,10 +481,11 @@ def nav_back():
     except Exception:
         pass
 
-    mark_dirty()
+    image = capture_now()
 
     return jsonify({
         "ok": True,
+        "image": image,
         "tabs": tabs_payload(),
     })
 
@@ -504,10 +504,11 @@ def nav_forward():
     except Exception:
         pass
 
-    mark_dirty()
+    image = capture_now()
 
     return jsonify({
         "ok": True,
+        "image": image,
         "tabs": tabs_payload(),
     })
 
@@ -526,10 +527,11 @@ def nav_reload():
     except Exception:
         pass
 
-    mark_dirty()
+    image = capture_now()
 
     return jsonify({
         "ok": True,
+        "image": image,
         "tabs": tabs_payload(),
     })
 
@@ -566,7 +568,7 @@ def act_shot():
             elif action == "type":
                 page.keyboard.type(
                     data.get("text", ""),
-                    delay=2,
+                    delay=1,
                 )
 
             elif action == "key":
@@ -580,19 +582,24 @@ def act_shot():
                     "error": "Acción desconocida",
                 }), 400
 
-        mark_dirty()
+            sync_tab_meta(active_tab)
+
+        image = capture_now()
 
         return jsonify({
             "ok": True,
-            "image": get_frame() or "",
+            "image": image,
             "active": active_tab,
             "tabs": tabs_payload(),
         })
 
     except Exception as e:
+        print("ACT_SHOT ERROR:", repr(e), flush=True)
         return jsonify({
             "ok": False,
+            "image": "",
             "error": str(e),
+            "tabs": tabs_payload(),
         }), 500
 
 
