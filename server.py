@@ -48,7 +48,32 @@ def get_frame():
     with _frame_lock:
         return _frame_b64
 
+def capture_now():
+    global _frame_b64, _frame_ts
 
+    try:
+        with browser_lock:
+            page = get_active_page()
+            page.wait_for_timeout(700)
+
+            shot = page.screenshot(
+                type="jpeg",
+                quality=70,
+                full_page=False,
+                timeout=10000,
+            )
+
+        encoded = "data:image/jpeg;base64," + base64.b64encode(shot).decode()
+
+        with _frame_lock:
+            _frame_b64 = encoded
+            _frame_ts = time.monotonic()
+
+        return encoded
+
+    except Exception as e:
+        print("CAPTURE_NOW ERROR:", repr(e), flush=True)
+        return ""
 def normalize_url_or_search(text):
     value = (text or "").strip()
 
@@ -97,8 +122,12 @@ def start_browser():
                 "--disable-background-timer-throttling",
                 "--disable-backgrounding-occluded-windows",
                 "--disable-renderer-backgrounding",
-                "--enable-accelerated-2d-canvas",
-                "--window-size=1280,720",
+                "--disable-software-rasterizer",
+"--disable-extensions",
+"--disable-background-networking",
+"--single-process",
+"--no-zygote",
+"--window-size=1280,720",
             ],
         )
 
@@ -292,14 +321,8 @@ def screenshot():
 
         image = get_frame()
 
-        if image is None:
-            mark_dirty()
-            deadline = time.monotonic() + 3.0
-
-            while get_frame() is None and time.monotonic() < deadline:
-                time.sleep(0.02)
-
-            image = get_frame() or ""
+if not image:
+    image = capture_now()
 
         return jsonify({
             "ok": True,
