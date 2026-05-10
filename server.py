@@ -23,7 +23,6 @@ runtime_lock = RLock()
 
 VIEWPORT_WIDTH = 1280
 VIEWPORT_HEIGHT = 720
-
 HOME_URL = "https://www.google.com"
 
 _frame_b64 = None
@@ -48,28 +47,41 @@ def get_frame():
         return _frame_b64
 
 
-def capture_now():
+def save_frame(shot):
     global _frame_b64, _frame_ts
 
+    encoded = "data:image/jpeg;base64," + base64.b64encode(shot).decode()
+
+    with _frame_lock:
+        _frame_b64 = encoded
+        _frame_ts = time.monotonic()
+
+    return encoded
+
+
+def capture_now_unlocked(page):
+    try:
+        page.wait_for_timeout(120)
+
+        shot = page.screenshot(
+            type="jpeg",
+            quality=JPEG_QUALITY,
+            full_page=False,
+            timeout=10000,
+        )
+
+        return save_frame(shot)
+
+    except Exception as e:
+        print("CAPTURE_NOW_UNLOCKED ERROR:", repr(e), flush=True)
+        return ""
+
+
+def capture_now():
     try:
         with browser_lock:
             page = get_active_page()
-            page.wait_for_timeout(180)
-
-            shot = page.screenshot(
-                type="jpeg",
-                quality=JPEG_QUALITY,
-                full_page=False,
-                timeout=10000,
-            )
-
-        encoded = "data:image/jpeg;base64," + base64.b64encode(shot).decode()
-
-        with _frame_lock:
-            _frame_b64 = encoded
-            _frame_ts = time.monotonic()
-
-        return encoded
+            return capture_now_unlocked(page)
 
     except Exception as e:
         print("CAPTURE_NOW ERROR:", repr(e), flush=True)
@@ -218,7 +230,7 @@ def tabs_payload():
 
 
 def capture_worker():
-    global _frame_b64, _frame_ts, _dirty
+    global _dirty
 
     while True:
         with _dirty_lock:
@@ -234,21 +246,12 @@ def capture_worker():
                     time.sleep(0.05)
                     continue
 
-                shot = tabs[active_tab]["page"].screenshot(
-                    type="jpeg",
-                    quality=JPEG_QUALITY,
-                    full_page=False,
-                    timeout=10000,
-                )
+                page = tabs[active_tab]["page"]
+                image = capture_now_unlocked(page)
 
-            encoded = "data:image/jpeg;base64," + base64.b64encode(shot).decode()
-
-            with _frame_lock:
-                _frame_b64 = encoded
-                _frame_ts = time.monotonic()
-
-            with _dirty_lock:
-                _dirty = False
+            if image:
+                with _dirty_lock:
+                    _dirty = False
 
         except Exception as e:
             print("CAPTURE_WORKER ERROR:", repr(e), flush=True)
@@ -345,8 +348,7 @@ def new_tab():
         with browser_lock:
             tab_id = create_tab(url, pinned=False, title="Nueva pestaña")
             active_tab = tab_id
-
-        image = capture_now()
+            image = capture_now_unlocked(get_active_page())
 
         return jsonify({
             "ok": True,
@@ -379,8 +381,9 @@ def switch_tab():
             "tabs": tabs_payload(),
         }), 404
 
-    active_tab = tab_id
-    image = capture_now()
+    with browser_lock:
+        active_tab = tab_id
+        image = capture_now_unlocked(get_active_page())
 
     return jsonify({
         "ok": True,
@@ -406,13 +409,6 @@ def close_tab():
             "tabs": tabs_payload(),
         }), 404
 
-    if tabs[tab_id]["pinned"]:
-        return jsonify({
-            "ok": False,
-            "error": "La pestaña fijada no se puede cerrar",
-            "tabs": tabs_payload(),
-        }), 400
-
     with browser_lock:
         try:
             tabs[tab_id]["page"].close()
@@ -425,8 +421,7 @@ def close_tab():
             active_tab = next(iter(tabs.keys()), None)
 
         ensure_active_tab()
-
-    image = capture_now()
+        image = capture_now_unlocked(get_active_page())
 
     return jsonify({
         "ok": True,
@@ -448,8 +443,7 @@ def navigate():
             page = get_active_page()
             safe_goto(page, url)
             sync_tab_meta(active_tab)
-
-        image = capture_now()
+            image = capture_now_unlocked(page)
 
         return jsonify({
             "ok": True,
@@ -473,15 +467,13 @@ def nav_back():
 
     try:
         with browser_lock:
-            get_active_page().go_back(
-                wait_until="domcontentloaded",
-                timeout=20000,
-            )
+            page = get_active_page()
+            page.go_back(wait_until="domcontentloaded", timeout=20000)
             sync_tab_meta(active_tab)
-    except Exception:
-        pass
+            image = capture_now_unlocked(page)
 
-    image = capture_now()
+    except Exception:
+        image = get_frame() or ""
 
     return jsonify({
         "ok": True,
@@ -496,15 +488,13 @@ def nav_forward():
 
     try:
         with browser_lock:
-            get_active_page().go_forward(
-                wait_until="domcontentloaded",
-                timeout=20000,
-            )
+            page = get_active_page()
+            page.go_forward(wait_until="domcontentloaded", timeout=20000)
             sync_tab_meta(active_tab)
-    except Exception:
-        pass
+            image = capture_now_unlocked(page)
 
-    image = capture_now()
+    except Exception:
+        image = get_frame() or ""
 
     return jsonify({
         "ok": True,
@@ -519,15 +509,13 @@ def nav_reload():
 
     try:
         with browser_lock:
-            get_active_page().reload(
-                wait_until="domcontentloaded",
-                timeout=20000,
-            )
+            page = get_active_page()
+            page.reload(wait_until="domcontentloaded", timeout=20000)
             sync_tab_meta(active_tab)
-    except Exception:
-        pass
+            image = capture_now_unlocked(page)
 
-    image = capture_now()
+    except Exception:
+        image = get_frame() or ""
 
     return jsonify({
         "ok": True,
@@ -566,25 +554,22 @@ def act_shot():
                 )
 
             elif action == "type":
-                page.keyboard.type(
-                    data.get("text", ""),
-                    delay=1,
-                )
+                text = data.get("text", "")
+                if text:
+                    page.keyboard.type(text, delay=15)
 
             elif action == "key":
-                page.keyboard.press(
-                    data.get("key", "Enter"),
-                )
+                page.keyboard.press(data.get("key", "Enter"))
 
             else:
                 return jsonify({
                     "ok": False,
                     "error": "Acción desconocida",
+                    "tabs": tabs_payload(),
                 }), 400
 
             sync_tab_meta(active_tab)
-
-        image = capture_now()
+            image = capture_now_unlocked(page)
 
         return jsonify({
             "ok": True,
@@ -597,10 +582,11 @@ def act_shot():
         print("ACT_SHOT ERROR:", repr(e), flush=True)
         return jsonify({
             "ok": False,
-            "image": "",
-            "error": str(e),
+            "image": get_frame() or "",
+            "active": active_tab,
             "tabs": tabs_payload(),
-        }), 500
+            "error": str(e),
+        }), 200
 
 
 if __name__ == "__main__":
