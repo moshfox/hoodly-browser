@@ -116,22 +116,19 @@ def start_browser():
         browser = pw.chromium.launch(
             headless=True,
             args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-software-rasterizer",
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--single-process",
-                "--no-zygote",
-                "--window-size=1280,720",
-            ],
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-web-security",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--window-size=1280,720",
+],
         )
 
         create_tab(HOODLY_URL, pinned=True, title="Hoodly")
@@ -602,8 +599,6 @@ def act_shot():
 if __name__ == "__main__":
     print("Hoodly Remote Browser iniciado", flush=True)
     print("Abre: http://127.0.0.1:5050", flush=True)
-
-    ensure_runtime_started()
 
     app.run(
         host="0.0.0.0",
