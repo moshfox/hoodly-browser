@@ -1,598 +1,389 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from threading import RLock, Thread
 import base64
 import urllib.parse
 import re
 import time
 import os
+import queue
+import threading
 
 app = Flask(__name__)
 CORS(app)
 
-pw = None
-browser = None
-tabs = {}
-active_tab = None
-tab_counter = 0
-browser_lock = RLock()
+# ---------------------------------------------------------------------------
+# All Playwright work runs on a SINGLE dedicated thread (_pw_thread).
+# Flask handler threads communicate with it via _task_queue (send) and
+# per-task result queues (receive).  This is the only correct way to use
+# sync_playwright in a multi-threaded server.
+# ---------------------------------------------------------------------------
 
-runtime_started = False
-runtime_lock = RLock()
+_task_queue = queue.Queue()
 
-VIEWPORT_WIDTH = 1280
+VIEWPORT_WIDTH  = 1280
 VIEWPORT_HEIGHT = 720
-HOME_URL = "https://www.google.com"
 
-_frame_b64 = None
-_frame_ts = 0.0
-_frame_lock = RLock()
+HOODLY_URL = "https://hodely.net/Hoodly/"
+HOME_URL   = "https://www.google.com"
 
-_dirty = True
-_dirty_lock = RLock()
-
-TARGET_FPS = 5
-JPEG_QUALITY = 28
+TARGET_FPS   = 15
+JPEG_QUALITY = 42
 
 
-def mark_dirty():
-    global _dirty
-    with _dirty_lock:
-        _dirty = True
-
-
-def get_frame():
-    with _frame_lock:
-        return _frame_b64
-
-
-def save_frame(shot):
-    global _frame_b64, _frame_ts
-
-    encoded = "data:image/jpeg;base64," + base64.b64encode(shot).decode()
-
-    with _frame_lock:
-        _frame_b64 = encoded
-        _frame_ts = time.monotonic()
-
-    return encoded
-
-
-def capture_now_unlocked(page):
-    try:
-        page.wait_for_timeout(120)
-
-        shot = page.screenshot(
-            type="jpeg",
-            quality=JPEG_QUALITY,
-            full_page=False,
-            timeout=10000,
-        )
-
-        return save_frame(shot)
-
-    except Exception as e:
-        print("CAPTURE_NOW_UNLOCKED ERROR:", repr(e), flush=True)
-        return ""
-
-
-def capture_now():
-    try:
-        with browser_lock:
-            page = get_active_page()
-            return capture_now_unlocked(page)
-
-    except Exception as e:
-        print("CAPTURE_NOW ERROR:", repr(e), flush=True)
-        return ""
-
+# ── helpers ────────────────────────────────────────────────────────────────
 
 def normalize_url_or_search(text):
     value = (text or "").strip()
-
     if not value:
         return HOME_URL
-
     if re.match(r"^https?://", value, re.I):
         return value
-
     if re.match(r"^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}", value):
         return "https://" + value
-
     return "https://www.google.com/search?q=" + urllib.parse.quote(value)
 
 
-def safe_goto(page, url):
+def _safe_goto(page, url):
+    from playwright.sync_api import TimeoutError as PTE
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=45000)
-    except PlaywrightTimeoutError:
+        page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+    except PTE:
         pass
-    except Exception as e:
-        print("GOTO ERROR:", repr(e), flush=True)
+    except Exception:
         try:
-            page.goto("about:blank", timeout=10000)
+            page.goto("about:blank", timeout=10_000)
         except Exception:
             pass
 
 
-def start_browser():
-    global pw, browser
-
-    with browser_lock:
-        if browser is not None:
-            return
-
-        pw = sync_playwright().start()
-
-        browser = pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--window-size=1280,720",
-            ],
-        )
-
-        create_tab(HOME_URL, pinned=False, title="Google")
-
-
-def create_tab(url=None, pinned=False, title="Nueva pestaña"):
-    global tab_counter, active_tab
-
-    if browser is None:
-        return None
-
-    tab_counter += 1
-    tab_id = f"tab_{tab_counter}"
-    final_url = url or HOME_URL
-
-    page = browser.new_page(
-        viewport={
-            "width": VIEWPORT_WIDTH,
-            "height": VIEWPORT_HEIGHT,
-        },
-        device_scale_factor=1,
-    )
-
-    tabs[tab_id] = {
-        "id": tab_id,
-        "page": page,
-        "title": title,
-        "url": final_url,
-        "pinned": pinned,
-        "created": time.time(),
-    }
-
-    active_tab = tab_id
-    safe_goto(page, final_url)
-    sync_tab_meta(tab_id)
-    mark_dirty()
-
-    return tab_id
-
-
-def ensure_active_tab():
-    global active_tab
-
-    start_browser()
-
-    if not tabs:
-        active_tab = create_tab(HOME_URL, pinned=False, title="Google")
-
-    if active_tab not in tabs:
-        active_tab = next(iter(tabs.keys()))
-
-    return active_tab
-
-
-def get_active_page():
-    return tabs[ensure_active_tab()]["page"]
-
-
-def sync_tab_meta(tab_id):
-    if tab_id not in tabs:
-        return
-
-    page = tabs[tab_id]["page"]
-
+def _sync_meta(tab):
+    page = tab["page"]
     try:
-        tabs[tab_id]["url"] = page.url or tabs[tab_id]["url"]
-        title = page.title()
-        tabs[tab_id]["title"] = title[:60] if title else "Nueva pestaña"
-
+        tab["url"] = page.url or tab["url"]
+        if tab["pinned"]:
+            tab["title"] = "Hoodly"
+        else:
+            t = page.title()
+            tab["title"] = t[:60] if t else "Nueva pestaña"
     except Exception:
         pass
 
 
-def tabs_payload():
-    ensure_active_tab()
+# ── Playwright worker thread ────────────────────────────────────────────────
 
-    return [
-        {
-            "id": t["id"],
-            "title": t["title"],
-            "url": t["url"],
-            "pinned": t["pinned"],
-            "active": t["id"] == active_tab,
-        }
-        for t in tabs.values()
-    ]
+def _pw_worker():
+    """
+    Runs forever on its own thread.
+    Pulls (fn, result_q) items from _task_queue and executes them here,
+    so every Playwright call happens on the thread that owns the objects.
+    """
+    from playwright.sync_api import sync_playwright
 
+    pw      = sync_playwright().start()
+    browser = pw.chromium.launch(
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-web-security",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--window-size=1280,720",
+        ],
+    )
 
-def capture_worker():
-    global _dirty
+    # ── state (lives entirely inside this thread) ──────────────────────────
+    tabs        = {}
+    active_tab  = [None]   # list so closures can mutate it
+    tab_counter = [0]
 
-    while True:
-        with _dirty_lock:
-            need = _dirty
+    _frame_b64 = [None]
+    _dirty     = [True]
 
-        if not need:
-            time.sleep(0.04)
-            continue
+    def _new_page():
+        return browser.new_page(
+            viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+            device_scale_factor=1,
+        )
 
+    def _create_tab(url=None, pinned=False, title="Nueva pestaña"):
+        tab_counter[0] += 1
+        tid = f"tab_{tab_counter[0]}"
+        page = _new_page()
+        tabs[tid] = {"id": tid, "page": page, "title": title,
+                     "url": url or HOME_URL, "pinned": pinned,
+                     "created": time.time()}
+        _safe_goto(page, url or HOME_URL)
+        active_tab[0] = tid
+        _sync_meta(tabs[tid])
+        _dirty[0] = True
+        return tid
+
+    def _tabs_payload():
+        return [
+            {"id": t["id"], "title": t["title"], "url": t["url"],
+             "pinned": t["pinned"], "active": t["id"] == active_tab[0]}
+            for t in tabs.values()
+        ]
+
+    def _ensure_active():
+        if not tabs:
+            _create_tab(HOME_URL, title="Google")
+        if active_tab[0] not in tabs:
+            active_tab[0] = next(iter(tabs))
+        return active_tab[0]
+
+    def _capture():
         try:
-            with browser_lock:
-                if browser is None or not tabs or active_tab not in tabs:
-                    time.sleep(0.05)
-                    continue
+            _ensure_active()
+            shot = tabs[active_tab[0]]["page"].screenshot(
+                type="jpeg", quality=JPEG_QUALITY, full_page=False,
+                timeout=5_000,
+                clip={"x": 0, "y": 0,
+                      "width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+            )
+            _frame_b64[0] = "data:image/jpeg;base64," + base64.b64encode(shot).decode()
+            _dirty[0] = False
+        except Exception:
+            pass
 
-                page = tabs[active_tab]["page"]
-                image = capture_now_unlocked(page)
+    # ── initial tabs ───────────────────────────────────────────────────────
+    _create_tab(HOODLY_URL, pinned=True,  title="Hoodly")
+    _create_tab(HOME_URL,   pinned=False, title="Google")
 
-            if image:
-                with _dirty_lock:
-                    _dirty = False
+    # ── background capture loop (runs *inside* this thread via the queue) ──
+    _last_capture = [0.0]
 
-        except Exception as e:
-            print("CAPTURE_WORKER ERROR:", repr(e), flush=True)
-            time.sleep(0.1)
+    # ── main event loop ────────────────────────────────────────────────────
+    while True:
+        # non-blocking so we can also drive the capture loop
+        try:
+            fn, result_q = _task_queue.get(timeout=0.015)
+            try:
+                result_q.put(("ok", fn(tabs, active_tab, tab_counter,
+                                        _frame_b64, _dirty,
+                                        _create_tab, _ensure_active,
+                                        _capture, _tabs_payload,
+                                        _sync_meta)))
+            except Exception as e:
+                result_q.put(("err", e))
+        except queue.Empty:
+            pass
 
-        time.sleep(1.0 / TARGET_FPS)
+        # drive the capture loop
+        now = time.monotonic()
+        if _dirty[0] and (now - _last_capture[0]) >= 1.0 / TARGET_FPS:
+            _capture()
+            _last_capture[0] = now
 
 
-def ensure_runtime_started():
-    global runtime_started
+def _call(fn):
+    """Send fn to the Playwright thread and block until it returns."""
+    rq = queue.Queue()
+    _task_queue.put((fn, rq))
+    status, value = rq.get()
+    if status == "err":
+        raise value
+    return value
 
-    with runtime_lock:
-        if runtime_started:
-            return
 
-        start_browser()
+# ── start the worker thread once at import time ────────────────────────────
 
-        worker = Thread(target=capture_worker, daemon=True)
-        worker.start()
+_pw_thread = threading.Thread(target=_pw_worker, daemon=True, name="pw-worker")
+_pw_thread.start()
 
-        runtime_started = True
 
+# ── Flask routes ────────────────────────────────────────────────────────────
 
 @app.route("/")
 def home_route():
     return send_from_directory(".", "index.html")
-
 
 @app.route("/favicon.ico")
 def favicon():
     return "", 204
 
 
-@app.route("/tabs", methods=["GET"])
+@app.route("/tabs")
 def get_tabs():
     try:
-        ensure_runtime_started()
-        ensure_active_tab()
-
-        return jsonify({
-            "ok": True,
-            "active": active_tab,
-            "tabs": tabs_payload(),
-        })
-
+        def fn(tabs, active_tab, *_rest):
+            return {"ok": True, "active": active_tab[0],
+                    "tabs": [{"id": t["id"], "title": t["title"],
+                               "url": t["url"], "pinned": t["pinned"],
+                               "active": t["id"] == active_tab[0]}
+                              for t in tabs.values()]}
+        return jsonify(_call(fn))
     except Exception as e:
-        return jsonify({
-            "ok": False,
-            "active": None,
-            "tabs": [],
-            "error": str(e),
-        }), 500
+        return jsonify({"ok": False, "tabs": [], "error": str(e)}), 500
 
 
-@app.route("/screenshot", methods=["GET"])
+@app.route("/screenshot")
 def screenshot():
     try:
-        ensure_runtime_started()
-        ensure_active_tab()
-
-        image = get_frame()
-
-        if not image:
-            image = capture_now()
-
-        return jsonify({
-            "ok": True,
-            "image": image,
-            "active": active_tab,
-            "tabs": tabs_payload(),
-        })
-
+        def fn(tabs, active_tab, _tc, frame_b64, dirty,
+               create_tab, ensure_active, capture, tabs_payload, sync_meta):
+            ensure_active()
+            if dirty[0] or frame_b64[0] is None:
+                capture()
+            return {"ok": True, "image": frame_b64[0] or "",
+                    "active": active_tab[0], "tabs": tabs_payload()}
+        return jsonify(_call(fn))
     except Exception as e:
-        print("SCREENSHOT ERROR:", repr(e), flush=True)
-        return jsonify({
-            "ok": False,
-            "image": "",
-            "active": None,
-            "tabs": [],
-            "error": str(e),
-        }), 500
+        return jsonify({"ok": False, "image": None, "tabs": [],
+                        "error": str(e)}), 500
 
 
 @app.route("/tab/new", methods=["POST"])
 def new_tab():
-    global active_tab
-
-    ensure_runtime_started()
-
-    data = request.get_json(silent=True) or {}
-    url = data.get("url") or HOME_URL
-
+    url = (request.get_json(silent=True) or {}).get("url") or HOME_URL
     try:
-        with browser_lock:
-            tab_id = create_tab(url, pinned=False, title="Nueva pestaña")
-            active_tab = tab_id
-            image = capture_now_unlocked(get_active_page())
-
-        return jsonify({
-            "ok": True,
-            "image": image,
-            "active": active_tab,
-            "tabs": tabs_payload(),
-        })
-
+        def fn(tabs, active_tab, _tc, frame_b64, dirty,
+               create_tab, ensure_active, capture, tabs_payload, sync_meta):
+            tid = create_tab(url, pinned=False, title="Nueva pestaña")
+            active_tab[0] = tid
+            dirty[0] = True
+            return {"ok": True, "active": active_tab[0], "tabs": tabs_payload()}
+        return jsonify(_call(fn))
     except Exception as e:
-        return jsonify({
-            "ok": False,
-            "tabs": tabs_payload(),
-            "error": str(e),
-        }), 500
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/tab/switch", methods=["POST"])
 def switch_tab():
-    global active_tab
-
-    ensure_runtime_started()
-
-    data = request.get_json(silent=True) or {}
-    tab_id = data.get("id")
-
-    if tab_id not in tabs:
-        return jsonify({
-            "ok": False,
-            "error": "La pestaña no existe",
-            "tabs": tabs_payload(),
-        }), 404
-
-    with browser_lock:
-        active_tab = tab_id
-        image = capture_now_unlocked(get_active_page())
-
-    return jsonify({
-        "ok": True,
-        "image": image,
-        "active": active_tab,
-        "tabs": tabs_payload(),
-    })
+    tab_id = (request.get_json(silent=True) or {}).get("id")
+    try:
+        def fn(tabs, active_tab, _tc, frame_b64, dirty,
+               create_tab, ensure_active, capture, tabs_payload, sync_meta):
+            if tab_id not in tabs:
+                raise KeyError("La pestaña no existe")
+            active_tab[0] = tab_id
+            dirty[0] = True
+            return {"ok": True, "active": active_tab[0], "tabs": tabs_payload()}
+        return jsonify(_call(fn))
+    except KeyError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/tab/close", methods=["POST"])
 def close_tab():
-    global active_tab
-
-    ensure_runtime_started()
-
-    data = request.get_json(silent=True) or {}
-    tab_id = data.get("id")
-
-    if tab_id not in tabs:
-        return jsonify({
-            "ok": False,
-            "error": "La pestaña no existe",
-            "tabs": tabs_payload(),
-        }), 404
-
-    with browser_lock:
-        try:
-            tabs[tab_id]["page"].close()
-        except Exception:
-            pass
-
-        del tabs[tab_id]
-
-        if active_tab == tab_id:
-            active_tab = next(iter(tabs.keys()), None)
-
-        ensure_active_tab()
-        image = capture_now_unlocked(get_active_page())
-
-    return jsonify({
-        "ok": True,
-        "image": image,
-        "active": active_tab,
-        "tabs": tabs_payload(),
-    })
+    tab_id = (request.get_json(silent=True) or {}).get("id")
+    try:
+        def fn(tabs, active_tab, _tc, frame_b64, dirty,
+               create_tab, ensure_active, capture, tabs_payload, sync_meta):
+            if tab_id not in tabs:
+                raise KeyError("La pestaña no existe")
+            if tabs[tab_id]["pinned"]:
+                raise PermissionError("La pestaña fijada no se puede cerrar")
+            try:
+                tabs[tab_id]["page"].close()
+            except Exception:
+                pass
+            del tabs[tab_id]
+            if active_tab[0] == tab_id:
+                active_tab[0] = next(iter(tabs), None)
+            ensure_active()
+            dirty[0] = True
+            return {"ok": True, "active": active_tab[0], "tabs": tabs_payload()}
+        return jsonify(_call(fn))
+    except KeyError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+    except PermissionError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/navigate", methods=["POST"])
 def navigate():
-    ensure_runtime_started()
-
-    data = request.get_json(silent=True) or {}
-    url = normalize_url_or_search(data.get("text", ""))
-
+    text = (request.get_json(silent=True) or {}).get("text", "")
+    url  = normalize_url_or_search(text)
     try:
-        with browser_lock:
-            page = get_active_page()
-            safe_goto(page, url)
-            sync_tab_meta(active_tab)
-            image = capture_now_unlocked(page)
-
-        return jsonify({
-            "ok": True,
-            "image": image,
-            "url": url,
-            "active": active_tab,
-            "tabs": tabs_payload(),
-        })
-
+        def fn(tabs, active_tab, _tc, frame_b64, dirty,
+               create_tab, ensure_active, capture, tabs_payload, sync_meta):
+            ensure_active()
+            page = tabs[active_tab[0]]["page"]
+            _safe_goto(page, url)
+            sync_meta(tabs[active_tab[0]])
+            dirty[0] = True
+            return {"ok": True, "url": url,
+                    "active": active_tab[0], "tabs": tabs_payload()}
+        return jsonify(_call(fn))
     except Exception as e:
-        return jsonify({
-            "ok": False,
-            "error": str(e),
-            "tabs": tabs_payload(),
-        }), 500
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.route("/nav/back", methods=["POST"])
-def nav_back():
-    ensure_runtime_started()
-
+def _nav_action(page_method, **kwargs):
     try:
-        with browser_lock:
-            page = get_active_page()
-            page.go_back(wait_until="domcontentloaded", timeout=20000)
-            sync_tab_meta(active_tab)
-            image = capture_now_unlocked(page)
+        def fn(tabs, active_tab, _tc, frame_b64, dirty,
+               create_tab, ensure_active, capture, tabs_payload, sync_meta):
+            ensure_active()
+            page = tabs[active_tab[0]]["page"]
+            try:
+                getattr(page, page_method)(
+                    wait_until="domcontentloaded", timeout=20_000, **kwargs)
+                sync_meta(tabs[active_tab[0]])
+            except Exception:
+                pass
+            dirty[0] = True
+            return {"ok": True, "tabs": tabs_payload()}
+        return jsonify(_call(fn))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-    except Exception:
-        image = get_frame() or ""
-
-    return jsonify({
-        "ok": True,
-        "image": image,
-        "tabs": tabs_payload(),
-    })
-
+@app.route("/nav/back",    methods=["POST"])
+def nav_back():    return _nav_action("go_back")
 
 @app.route("/nav/forward", methods=["POST"])
-def nav_forward():
-    ensure_runtime_started()
+def nav_forward(): return _nav_action("go_forward")
 
-    try:
-        with browser_lock:
-            page = get_active_page()
-            page.go_forward(wait_until="domcontentloaded", timeout=20000)
-            sync_tab_meta(active_tab)
-            image = capture_now_unlocked(page)
-
-    except Exception:
-        image = get_frame() or ""
-
-    return jsonify({
-        "ok": True,
-        "image": image,
-        "tabs": tabs_payload(),
-    })
-
-
-@app.route("/nav/reload", methods=["POST"])
-def nav_reload():
-    ensure_runtime_started()
-
-    try:
-        with browser_lock:
-            page = get_active_page()
-            page.reload(wait_until="domcontentloaded", timeout=20000)
-            sync_tab_meta(active_tab)
-            image = capture_now_unlocked(page)
-
-    except Exception:
-        image = get_frame() or ""
-
-    return jsonify({
-        "ok": True,
-        "image": image,
-        "tabs": tabs_payload(),
-    })
+@app.route("/nav/reload",  methods=["POST"])
+def nav_reload():  return _nav_action("reload")
 
 
 @app.route("/act_shot", methods=["POST"])
 def act_shot():
-    ensure_runtime_started()
-
-    data = request.get_json(silent=True) or {}
+    data   = request.get_json(silent=True) or {}
     action = data.get("action")
-
     try:
-        with browser_lock:
-            page = get_active_page()
+        def fn(tabs, active_tab, _tc, frame_b64, dirty,
+               create_tab, ensure_active, capture, tabs_payload, sync_meta):
+            ensure_active()
+            page = tabs[active_tab[0]]["page"]
 
             if action == "click":
-                page.mouse.click(
-                    int(data.get("x", 0)),
-                    int(data.get("y", 0)),
-                )
-
+                page.mouse.click(int(data.get("x", 0)), int(data.get("y", 0)))
             elif action == "dblclick":
-                page.mouse.dblclick(
-                    int(data.get("x", 0)),
-                    int(data.get("y", 0)),
-                )
-
+                page.mouse.dblclick(int(data.get("x", 0)), int(data.get("y", 0)))
             elif action == "scroll":
-                page.mouse.wheel(
-                    0,
-                    int(data.get("amount", 180)),
-                )
-
+                page.mouse.wheel(0, int(data.get("amount", 180)))
             elif action == "type":
-                text = data.get("text", "")
-                if text:
-                    page.keyboard.type(text, delay=15)
-
+                page.keyboard.type(data.get("text", ""), delay=2)
             elif action == "key":
                 page.keyboard.press(data.get("key", "Enter"))
-
             else:
-                return jsonify({
-                    "ok": False,
-                    "error": "Acción desconocida",
-                    "tabs": tabs_payload(),
-                }), 400
+                raise ValueError("Acción desconocida")
 
-            sync_tab_meta(active_tab)
-            image = capture_now_unlocked(page)
-
-        return jsonify({
-            "ok": True,
-            "image": image,
-            "active": active_tab,
-            "tabs": tabs_payload(),
-        })
-
+            dirty[0] = True
+            capture()
+            return {"ok": True, "image": frame_b64[0] or "",
+                    "active": active_tab[0], "tabs": tabs_payload()}
+        return jsonify(_call(fn))
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        print("ACT_SHOT ERROR:", repr(e), flush=True)
-        return jsonify({
-            "ok": False,
-            "image": get_frame() or "",
-            "active": active_tab,
-            "tabs": tabs_payload(),
-            "error": str(e),
-        }), 200
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":
-    print("Hoodly Remote Browser iniciado", flush=True)
-    print("Abre: http://127.0.0.1:5050", flush=True)
-
+    print("Hoodly Remote Browser iniciado")
+    print("Abre: http://127.0.0.1:5050")
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 5050)),
